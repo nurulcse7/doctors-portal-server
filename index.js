@@ -10,13 +10,11 @@ app.use(cors());
 app.use(express.json());
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.70yiu6o.mongodb.net/?retryWrites=true&w=majority`;
-const client = new MongoClient(uri, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
+const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true,
   serverApi: ServerApiVersion.v1,
 });
 
-// jwt verify function
+// jwt verify function (Middleware 01)
 function verifyJWT(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
@@ -35,12 +33,23 @@ function verifyJWT(req, res, next) {
 async function run() {
   try {
     const appointmentOptionCollection = client
-      .db('doctorsPortal')
-      .collection('appointmentOptions');
-    const bookingsCollection = client
-      .db('doctorsPortal')
-      .collection('bookings');
+      .db('doctorsPortal').collection('appointmentOptions');
+    const bookingsCollection = client.db('doctorsPortal').collection('bookings');
     const usersCollection = client.db('doctorsPortal').collection('users');
+    const doctorsCollection = client.db('doctorsPortal').collection('doctors');
+
+// NOTE: make sure you use verifyAdmin after verifyJWT 76-8 06.00 (Middleware 02)
+const verifyAdmin = async (req, res, next) =>{
+  // console.log('Inside verifyAdmin', req.decoded.email);
+  const decodedEmail = req.decoded.email;
+  const query = { email: decodedEmail };
+  const user = await usersCollection.findOne(query);
+
+  if (user?.role !== 'admin') {
+      return res.status(403).send({ message: 'forbidden access' })
+  }
+  next();
+}
 
     // Use Aggregate to query multiple collection and then merge data
     app.get('/appointmentOptions', async (req, res) => {
@@ -51,23 +60,19 @@ async function run() {
 
       // get the bookings of the provided date
       const bookingQuery = { appointmentDate: date };
-      const alreadyBooked = await bookingsCollection
-        .find(bookingQuery)
-        .toArray();
+      const alreadyBooked = await bookingsCollection.find(bookingQuery).toArray();
 
       // code carefully :D
       options.forEach((option) => {
-        const optionBooked = alreadyBooked.filter(
-          (book) => book.treatment === option.name
+        const optionBooked = alreadyBooked.filter( (book) => book.treatment === option.name
         );
         const bookedSlots = optionBooked.map((book) => book.slot);
-        const remainingSlots = option.slots.filter(
-          (slot) => !bookedSlots.includes(slot)
-        );
+        const remainingSlots = option.slots.filter((slot) => !bookedSlots.includes(slot));
         option.slots = remainingSlots;
       });
       res.send(options);
     });
+    // 
     app.get('/v2/appointmentOptions', async (req, res) => {
       const date = req.query.date;
       const options = await appointmentOptionCollection
@@ -114,6 +119,13 @@ async function run() {
         .toArray();
       res.send(options);
     });
+
+// 76-2 08.00 To get appointment name/title 
+    app.get('/appointmentSpecialty', async (req, res) => {
+      const query = {}
+      const result = await appointmentOptionCollection.find(query).project({ name: 1 }).toArray();
+      res.send(result);
+  })
 
     /***
      * API Naming Convention
@@ -191,13 +203,13 @@ async function run() {
       res.send(result);
     });
     // Make admin api 75-8 
-    app.put('/users/admin/:id', verifyJWT, async (req, res) => {
-      const decodedEmail = req.decoded.email;
-      const query = { email: decodedEmail };
-      const user = await usersCollection.findOne(query);
-      if (user?.role !== 'admin') {
-        return res.status(403).send({ message: 'forbidden access' });
-      }
+    app.put('/users/admin/:id', verifyJWT, verifyAdmin, async (req, res) => {
+      // const decodedEmail = req.decoded.email;
+      // const query = { email: decodedEmail };
+      // const user = await usersCollection.findOne(query);
+      // if (user?.role !== 'admin') {
+      //   return res.status(403).send({ message: 'forbidden access' });
+      // } //76-9 01.10 
       const id = req.params.id;
       const filter = { _id: ObjectId(id) };
       const options = { upsert: true };
@@ -206,13 +218,30 @@ async function run() {
           role: 'admin',
         },
       };
-      const result = await usersCollection.updateOne(
-        filter,
-        updatedDoc,
-        options
-      );
+      const result = await usersCollection.updateOne(filter, updatedDoc, options);
       res.send(result);
     });
+
+// 76-5 07.00 Load data from doctors api 
+    app.get('/doctors', verifyJWT, verifyAdmin, async (req, res) => {
+      const query = {};
+      const doctors = await doctorsCollection.find(query).toArray();
+      res.send(doctors);
+  })
+// 76-5 01.30 Add  A Doctor that means Doctor info save to mongoDB (doctors).
+  app.post('/doctors', verifyJWT, verifyAdmin, async (req, res) => {
+      const doctor = req.body;
+      const result = await doctorsCollection.insertOne(doctor);
+      res.send(result);
+  });
+// 76-8 Delete Doctor form mongoDB and manage doctor ui 
+  app.delete('/doctors/:id', verifyJWT, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const filter = { _id: ObjectId(id) };
+      const result = await doctorsCollection.deleteOne(filter);
+      res.send(result);
+  })
+
   } finally {
   }
 }
